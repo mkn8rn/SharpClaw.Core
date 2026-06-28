@@ -17,6 +17,7 @@
     <Compile Include="SharpClawCoreAssembly.cs" />
     <Compile Include="Clients\**\*.cs" />
     <Compile Include="DefaultResources\**\*.cs" />
+    <Compile Include="Jobs\**\*.cs" />
     <Compile Include="Modules\**\*.cs" />
     <Compile Include="Permissions\**\*.cs" />
     <Compile Include="Tasks\**\*.cs" />
