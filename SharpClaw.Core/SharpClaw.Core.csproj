@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Compile Include="SharpClawCoreAssembly.cs" />
+    <Compile Include="Agents\**\*.cs" />
     <Compile Include="Chat\**\*.cs" />
     <Compile Include="Clients\**\*.cs" />
     <Compile Include="Conversation\**\*.cs" />
