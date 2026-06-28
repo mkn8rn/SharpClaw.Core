@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Compile Include="SharpClawCoreAssembly.cs" />
+    <Compile Include="Chat\**\*.cs" />
     <Compile Include="Clients\**\*.cs" />
     <Compile Include="DefaultResources\**\*.cs" />
     <Compile Include="Jobs\**\*.cs" />
@@ -22,6 +23,8 @@
     <Compile Include="Permissions\**\*.cs" />
     <Compile Include="Resources\**\*.cs" />
     <Compile Include="Tasks\**\*.cs" />
+    <Compile Include="Threads\**\*.cs" />
+    <Compile Include="Tools\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
