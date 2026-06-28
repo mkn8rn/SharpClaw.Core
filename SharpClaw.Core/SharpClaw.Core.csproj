@@ -21,6 +21,7 @@
     <Compile Include="Jobs\**\*.cs" />
     <Compile Include="Modules\**\*.cs" />
     <Compile Include="Permissions\**\*.cs" />
+    <Compile Include="Providers\**\*.cs" />
     <Compile Include="Resources\**\*.cs" />
     <Compile Include="Tasks\**\*.cs" />
     <Compile Include="Threads\**\*.cs" />
