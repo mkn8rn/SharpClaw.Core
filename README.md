@@ -27,7 +27,7 @@ is a superset; runtime modules can make core pipeline additions, but core
 modules cannot publish application surfaces.
 
 The first Core package shape is deliberately small. The solution contains one
-packable Core class library directly at `SharpClaw.Core.csproj` and one
+packable Core class library at `SharpClaw.Core/SharpClaw.Core.csproj` and one
 Contracts package at `SharpClaw.Contracts/SharpClaw.Contracts.csproj`. Core can
 grow by moving host-independent pipeline behavior out of the SharpClaw
 application only after the relevant storage and module boundaries are explicit.
