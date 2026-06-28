@@ -1,0 +1,39 @@
+# Internal specs and local reports
+docs/internal/
+
+# Build outputs
+bin/
+obj/
+artifacts/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+# Test output
+TestResults/
+coverage/
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# NuGet packages
+*.nupkg
+*.snupkg
+packages/
+
+# IDE and user files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.rsuser
+*.DotSettings.user
+
+# Environment and local machine files
+*.env
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
