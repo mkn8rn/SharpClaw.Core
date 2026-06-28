@@ -26,11 +26,24 @@ contributions for a SharpClaw application runtime. The runtime module contract
 is a superset; runtime modules can make core pipeline additions, but core
 modules cannot publish application surfaces.
 
-The first Core package shape is deliberately small. The solution contains one
-packable Core class library at `SharpClaw.Core/SharpClaw.Core.csproj` and one
-Contracts package at `SharpClaw.Contracts/SharpClaw.Contracts.csproj`. Core can
-grow by moving host-independent pipeline behavior out of the SharpClaw
-application only after the relevant storage and module boundaries are explicit.
+The Core package now owns the host-independent parts of the runtime pipeline.
+It contains task script parsing, validation, compilation, and step registration;
+the module registry and its capability, storage-contract, protocol-contract,
+CLI-command, resource, flag, header-tag, runtime-host, and initialization-order
+state machines; provider plugin selection and completion parameter validation;
+default resource keys; event sink dispatch; module metrics; and sidecar
+capability telemetry contracts. These pieces can run in any host that supplies
+the actual stores, process boundaries, provider HTTP clients, clocks, logging,
+and dependency-injection container.
+
+The SharpClaw application repository remains responsible for application
+infrastructure. It still owns ASP.NET endpoints, CLI dispatch, database models,
+EF Core stores, migrations, sidecar process launch, in-process module loading,
+gateway routing, frontend assets, and bundled module composition. For example,
+Core can decide that a module's storage contract declares an indexed
+`scheduled_jobs` store with a maximum document size, but the application host is
+the component that maps that contract to EF entities, enforces row ownership,
+and persists the data.
 
 The solution can be built from this repository root.
 
