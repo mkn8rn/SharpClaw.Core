@@ -17,6 +17,7 @@
     <Compile Include="SharpClawCoreAssembly.cs" />
     <Compile Include="Chat\**\*.cs" />
     <Compile Include="Clients\**\*.cs" />
+    <Compile Include="Conversation\**\*.cs" />
     <Compile Include="DefaultResources\**\*.cs" />
     <Compile Include="Jobs\**\*.cs" />
     <Compile Include="Modules\**\*.cs" />
