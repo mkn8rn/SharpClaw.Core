@@ -144,6 +144,31 @@ public sealed class ConversationTopologyEngine
         channel.Agent = agent;
     }
 
+    /// <summary>
+    /// Resolves the agent for a channel operation with an optional override.
+    /// </summary>
+    public AgentDB ResolveRequestedAgent(
+        ChannelDB channel,
+        Guid? requestedAgentId)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+
+        var defaultAgent = ResolveEffectiveAgent(channel);
+
+        if (requestedAgentId is null || requestedAgentId == defaultAgent?.Id)
+            return defaultAgent
+                ?? throw new InvalidOperationException(
+                    $"Channel {channel.Id} has no agent and no context agent.");
+
+        var allowed = ResolveEffectiveAllowedAgents(channel)
+            .FirstOrDefault(agent => agent.Id == requestedAgentId);
+
+        return allowed
+            ?? throw new InvalidOperationException(
+                $"Agent {requestedAgentId} is not allowed on channel {channel.Id}. " +
+                "Add it to the channel's or context's allowed agents first.");
+    }
+
     /// <summary>Adds an allowed agent if it is not already present.</summary>
     public bool AddChannelAllowedAgent(ChannelDB channel, AgentDB agent)
     {
