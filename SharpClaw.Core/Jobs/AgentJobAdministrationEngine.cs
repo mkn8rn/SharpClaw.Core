@@ -1,10 +1,14 @@
+using System.Linq.Expressions;
 using SharpClaw.Contracts;
 using SharpClaw.Contracts.DTOs.AgentActions;
 using SharpClaw.Contracts.DTOs.Chat;
 using SharpClaw.Contracts.Entities.Core;
 using SharpClaw.Contracts.Entities.Core.Context;
+using SharpClaw.Contracts.Entities.Core.Clearance;
 using SharpClaw.Contracts.Entities.Core.Jobs;
 using SharpClaw.Contracts.Enums;
+using SharpClaw.Core.Modules;
+using SharpClaw.Core.Permissions;
 
 namespace SharpClaw.Core.Jobs;
 
@@ -66,6 +70,121 @@ public sealed class AgentJobAdministrationEngine
             ScriptJson = request.ScriptJson,
             WorkingDirectory = request.WorkingDirectory,
         };
+    }
+
+    /// <summary>
+    /// Determines whether a registered action key requires a per-resource grant.
+    /// </summary>
+    public bool IsPerResourceAction(
+        ModuleRegistry moduleRegistry,
+        string? actionKey)
+    {
+        ArgumentNullException.ThrowIfNull(moduleRegistry);
+
+        if (string.IsNullOrWhiteSpace(actionKey))
+            return false;
+
+        if (!moduleRegistry.TryResolve(actionKey, out var moduleId, out var toolName))
+            return false;
+
+        var descriptor = moduleRegistry.GetPermissionDescriptor(moduleId, toolName);
+        return descriptor?.IsPerResource ?? false;
+    }
+
+    /// <summary>Resolves the delegated permission method for an action key.</summary>
+    public string? ResolveDelegateTo(
+        ModuleRegistry moduleRegistry,
+        string? actionKey)
+    {
+        ArgumentNullException.ThrowIfNull(moduleRegistry);
+
+        if (string.IsNullOrWhiteSpace(actionKey))
+            return null;
+
+        if (!moduleRegistry.TryResolve(actionKey, out var moduleId, out var toolName))
+            return null;
+
+        var descriptor = moduleRegistry.GetPermissionDescriptor(moduleId, toolName);
+        return descriptor?.DelegateTo;
+    }
+
+    /// <summary>
+    /// Returns whether a permission set contains a grant matching the action key.
+    /// </summary>
+    public bool HasMatchingGrant(
+        ModuleRegistry moduleRegistry,
+        PermissionSetDB permissionSet,
+        Guid? resourceId,
+        string? actionKey)
+    {
+        ArgumentNullException.ThrowIfNull(moduleRegistry);
+        ArgumentNullException.ThrowIfNull(permissionSet);
+
+        var delegateName = ResolveDelegateTo(moduleRegistry, actionKey);
+        return delegateName is not null
+            && HasGrantByDelegateName(
+                moduleRegistry,
+                permissionSet,
+                delegateName,
+                resourceId);
+    }
+
+    /// <summary>
+    /// Returns whether a permission set contains the grant mapped by a delegate name.
+    /// </summary>
+    public bool HasGrantByDelegateName(
+        ModuleRegistry moduleRegistry,
+        PermissionSetDB permissionSet,
+        string delegateName,
+        Guid? resourceId)
+    {
+        ArgumentNullException.ThrowIfNull(moduleRegistry);
+        ArgumentNullException.ThrowIfNull(permissionSet);
+        ArgumentException.ThrowIfNullOrWhiteSpace(delegateName);
+
+        var snapshot = PermissionSetSnapshot.FromPermissionSet(permissionSet);
+        var flagKey = moduleRegistry.ResolveGlobalFlag(delegateName);
+        if (flagKey is not null)
+            return PermissionEvaluationEngine.HasGlobalFlagGrant(snapshot, flagKey);
+
+        var resourceType = moduleRegistry.ResolveResourceType(delegateName);
+        return resourceType is not null
+            && PermissionEvaluationEngine.HasResourceGrant(snapshot, resourceType, resourceId);
+    }
+
+    /// <summary>
+    /// Builds the standard action-prefix predicate used by job lookup APIs.
+    /// </summary>
+    public Expression<Func<AgentJobDB, bool>> BuildActionPrefixPredicate(
+        string actionKeyPrefix,
+        Guid? resourceId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actionKeyPrefix);
+
+        return job => job.ActionKey != null
+            && job.ActionKey.StartsWith(
+                actionKeyPrefix,
+                StringComparison.OrdinalIgnoreCase)
+            && (resourceId == null || job.ResourceId == resourceId);
+    }
+
+    /// <summary>Returns whether a job action key matches a prefix.</summary>
+    public bool JobMatchesActionPrefix(
+        AgentJobDB? job,
+        string actionKeyPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actionKeyPrefix);
+        return job?.ActionKey?.StartsWith(
+            actionKeyPrefix,
+            StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    /// <summary>Orders jobs by newest creation timestamp first.</summary>
+    public IReadOnlyList<AgentJobDB> OrderMostRecent(
+        IEnumerable<AgentJobDB> jobs)
+    {
+        ArgumentNullException.ThrowIfNull(jobs);
+        return jobs.OrderByDescending(static job => job.CreatedAt).ToArray();
     }
 
     /// <summary>Applies a lifecycle decision and creates persisted log rows.</summary>
