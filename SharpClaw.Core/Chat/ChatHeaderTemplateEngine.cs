@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
-using SharpClaw.Contracts;
 using SharpClaw.Contracts.Attributes;
 using SharpClaw.Contracts.Entities;
 using SharpClaw.Contracts.Entities.Core;
@@ -23,6 +22,7 @@ public sealed partial class ChatHeaderTemplateEngine(
     ProviderApiClientFactory clientFactory)
 {
     private static readonly ConcurrentDictionary<Type, HashSet<string>> SensitiveFieldCache = new();
+    private readonly ChatHeaderGrantFormatter _grantFormatter = new(moduleRegistry);
 
     /// <summary>
     /// Extracts unique tag names from a header template in encounter order.
@@ -130,7 +130,7 @@ public sealed partial class ChatHeaderTemplateEngine(
         if (ctx.User?.Role is null || ctx.UserPs is null)
             return "(none)";
 
-        var grants = CollectGrantNames(ctx.UserPs);
+        var grants = _grantFormatter.FormatGrantNames(ctx.UserPs);
         return grants.Count > 0
             ? $"{ctx.User.Role.Name} ({string.Join(", ", grants)})"
             : ctx.User.Role.Name;
@@ -148,7 +148,7 @@ public sealed partial class ChatHeaderTemplateEngine(
         sb.Append(ctx.AgentRole.Name);
         if (ctx.AgentPs is not null)
         {
-            var grants = await CollectGrantNamesWithResourcesAsync(
+            var grants = await _grantFormatter.FormatGrantNamesWithResourcesAsync(
                 ctx.AgentPs,
                 serviceProvider,
                 ct);
@@ -167,7 +167,7 @@ public sealed partial class ChatHeaderTemplateEngine(
         if (ctx.AgentPs is null)
             return "(none)";
 
-        var grants = await CollectGrantNamesWithResourcesAsync(
+        var grants = await _grantFormatter.FormatGrantNamesWithResourcesAsync(
             ctx.AgentPs,
             serviceProvider,
             ct);
@@ -179,85 +179,8 @@ public sealed partial class ChatHeaderTemplateEngine(
         if (ps is null)
             return "(none)";
 
-        var grants = CollectGrantNames(ps);
+        var grants = _grantFormatter.FormatGrantNames(ps);
         return grants.Count > 0 ? string.Join(", ", grants) : "(none)";
-    }
-
-    private List<string> CollectGrantNames(PermissionSetDB ps)
-    {
-        var grants = new List<string>();
-
-        foreach (var flag in ps.GlobalFlags)
-        {
-            grants.Add(flag.FlagKey.StartsWith("Can", StringComparison.Ordinal)
-                ? flag.FlagKey[3..]
-                : flag.FlagKey);
-        }
-
-        foreach (var desc in moduleRegistry.GetAllResourceTypeDescriptors())
-        {
-            if (ps.ResourceAccesses.Any(a => a.ResourceType == desc.ResourceType))
-                grants.Add(desc.GrantLabel);
-        }
-
-        return grants;
-    }
-
-    private async Task<List<string>> CollectGrantNamesWithResourcesAsync(
-        PermissionSetDB ps,
-        IServiceProvider serviceProvider,
-        CancellationToken ct)
-    {
-        var grants = new List<string>();
-
-        foreach (var flag in ps.GlobalFlags)
-        {
-            grants.Add(flag.FlagKey.StartsWith("Can", StringComparison.Ordinal)
-                ? flag.FlagKey[3..]
-                : flag.FlagKey);
-        }
-
-        foreach (var desc in moduleRegistry.GetAllResourceTypeDescriptors())
-        {
-            var grantedIds = ps.ResourceAccesses
-                .Where(a => a.ResourceType == desc.ResourceType)
-                .Select(a => a.ResourceId)
-                .ToList();
-
-            await AppendResourceGrantAsync(
-                grants,
-                desc.GrantLabel,
-                grantedIds,
-                () => desc.LoadAllIds(serviceProvider, ct));
-        }
-
-        return grants;
-    }
-
-    private static async Task AppendResourceGrantAsync(
-        List<string> grants,
-        string grantName,
-        IEnumerable<Guid> grantedIds,
-        Func<Task<List<Guid>>> loadAllIdsAsync)
-    {
-        var ids = grantedIds.ToList();
-        if (ids.Count == 0)
-            return;
-
-        List<Guid> resolved;
-        if (ids.Any(id => id == WellKnownIds.AllResources))
-            resolved = await loadAllIdsAsync();
-        else
-            resolved = ids;
-
-        if (resolved.Count == 0)
-        {
-            grants.Add(grantName);
-            return;
-        }
-
-        var idList = string.Join(",", resolved.Select(id => id.ToString("D")));
-        grants.Add($"{grantName}[{idList}]");
     }
 
     private async Task<string?> TryExpandModuleTagAsync(
