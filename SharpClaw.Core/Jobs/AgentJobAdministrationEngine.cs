@@ -135,6 +135,55 @@ public sealed class AgentJobAdministrationEngine
         return agentClearance == PermissionClearance.ApprovedBySameLevelUser;
     }
 
+    /// <summary>
+    /// Resolves whether channel/context grants can preauthorize a pending job.
+    /// </summary>
+    public AgentJobChannelPreauthorizationDecision EvaluateChannelPreauthorization(
+        PermissionClearance agentClearance,
+        bool callerHasGrant,
+        bool channelHasGrant,
+        bool contextHasGrant)
+    {
+        if (!CanUseChannelPreauthorization(agentClearance))
+        {
+            return new AgentJobChannelPreauthorizationDecision(
+                IsPreauthorized: false,
+                Source: AgentJobChannelPreauthorizationSource.NotApplicable,
+                RequiresCallerGrant: false);
+        }
+
+        var requiresCallerGrant =
+            RequiresCallerGrantForChannelPreauthorization(agentClearance);
+        if (requiresCallerGrant && !callerHasGrant)
+        {
+            return new AgentJobChannelPreauthorizationDecision(
+                IsPreauthorized: false,
+                Source: AgentJobChannelPreauthorizationSource.CallerGrantMissing,
+                RequiresCallerGrant: true);
+        }
+
+        if (channelHasGrant)
+        {
+            return new AgentJobChannelPreauthorizationDecision(
+                IsPreauthorized: true,
+                Source: AgentJobChannelPreauthorizationSource.Channel,
+                RequiresCallerGrant: requiresCallerGrant);
+        }
+
+        if (contextHasGrant)
+        {
+            return new AgentJobChannelPreauthorizationDecision(
+                IsPreauthorized: true,
+                Source: AgentJobChannelPreauthorizationSource.Context,
+                RequiresCallerGrant: requiresCallerGrant);
+        }
+
+        return new AgentJobChannelPreauthorizationDecision(
+            IsPreauthorized: false,
+            Source: AgentJobChannelPreauthorizationSource.NoGrant,
+            RequiresCallerGrant: requiresCallerGrant);
+    }
+
     /// <summary>Projects a job and its log rows into the public response.</summary>
     public AgentJobResponse ToResponse(AgentJobDB job)
     {
@@ -252,4 +301,33 @@ public sealed class AgentJobAdministrationEngine
                 + (i == 0 ? completionRemainder : 0);
         }
     }
+}
+
+/// <summary>
+/// Store-neutral channel/context job preauthorization result.
+/// </summary>
+public sealed record AgentJobChannelPreauthorizationDecision(
+    bool IsPreauthorized,
+    AgentJobChannelPreauthorizationSource Source,
+    bool RequiresCallerGrant);
+
+/// <summary>
+/// Explains how a channel/context job preauthorization decision was reached.
+/// </summary>
+public enum AgentJobChannelPreauthorizationSource
+{
+    /// <summary>The requested clearance cannot be channel-preauthorized.</summary>
+    NotApplicable,
+
+    /// <summary>The caller lacked the same grant required for level-one preauthorization.</summary>
+    CallerGrantMissing,
+
+    /// <summary>The channel permission set preauthorized the job.</summary>
+    Channel,
+
+    /// <summary>The parent context permission set preauthorized the job.</summary>
+    Context,
+
+    /// <summary>No channel or context grant matched the job action.</summary>
+    NoGrant
 }
