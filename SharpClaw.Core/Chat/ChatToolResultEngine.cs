@@ -1,5 +1,6 @@
 using System.Text;
 using SharpClaw.Contracts.DTOs.AgentActions;
+using SharpClaw.Contracts.DTOs.Chat;
 using SharpClaw.Contracts.Providers;
 
 namespace SharpClaw.Core.Chat;
@@ -98,5 +99,67 @@ public sealed class ChatToolResultEngine
             resultContent += " (screenshot captured successfully)";
 
         return ToolAwareMessage.ToolResult(toolCallId, resultContent);
+    }
+
+    /// <summary>
+    /// Applies one provider round's token usage to already-returned job
+    /// response snapshots. Any remainder is assigned to the first round job.
+    /// </summary>
+    public void ApplyRoundTokenUsageToJobResponses(
+        IList<AgentJobResponse> jobResults,
+        IReadOnlyList<Guid> roundJobIds,
+        int promptTokens,
+        int completionTokens)
+    {
+        ArgumentNullException.ThrowIfNull(jobResults);
+        ArgumentNullException.ThrowIfNull(roundJobIds);
+
+        if (promptTokens < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(promptTokens),
+                promptTokens,
+                "Prompt tokens cannot be negative.");
+        if (completionTokens < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(completionTokens),
+                completionTokens,
+                "Completion tokens cannot be negative.");
+        if (roundJobIds.Count == 0)
+            return;
+
+        var count = roundJobIds.Count;
+        var promptPer = promptTokens / count;
+        var completionPer = completionTokens / count;
+        var promptRemainder = promptTokens % count;
+        var completionRemainder = completionTokens % count;
+
+        for (var roundIndex = 0; roundIndex < roundJobIds.Count; roundIndex++)
+        {
+            var id = roundJobIds[roundIndex];
+            var promptShare = promptPer
+                + (roundIndex == 0 ? promptRemainder : 0);
+            var completionShare = completionPer
+                + (roundIndex == 0 ? completionRemainder : 0);
+
+            for (var jobIndex = jobResults.Count - 1; jobIndex >= 0; jobIndex--)
+            {
+                if (jobResults[jobIndex].Id != id)
+                    continue;
+
+                var existing = jobResults[jobIndex].JobCost;
+                var newPrompt = (existing?.TotalPromptTokens ?? 0) + promptShare;
+                var newCompletion =
+                    (existing?.TotalCompletionTokens ?? 0) + completionShare;
+
+                jobResults[jobIndex] = jobResults[jobIndex] with
+                {
+                    JobCost = new TokenUsageResponse(
+                        newPrompt,
+                        newCompletion,
+                        newPrompt + newCompletion)
+                };
+                break;
+            }
+        }
     }
 }
