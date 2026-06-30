@@ -143,13 +143,12 @@ public sealed class AgentJobAdministrationEngine
         ArgumentException.ThrowIfNullOrWhiteSpace(delegateName);
 
         var snapshot = PermissionSetSnapshot.FromPermissionSet(permissionSet);
-        var flagKey = moduleRegistry.ResolveGlobalFlag(delegateName);
-        if (flagKey is not null)
-            return PermissionEvaluationEngine.HasGlobalFlagGrant(snapshot, flagKey);
+        var plan = PermissionDelegatePlanner.BuildPlan(
+            delegateName,
+            resourceId,
+            moduleRegistry);
 
-        var resourceType = moduleRegistry.ResolveResourceType(delegateName);
-        return resourceType is not null
-            && PermissionEvaluationEngine.HasResourceGrant(snapshot, resourceType, resourceId);
+        return PermissionDelegatePlanner.HasGrant(snapshot, plan);
     }
 
     /// <summary>
