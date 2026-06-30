@@ -1,3 +1,8 @@
+using System.Linq.Expressions;
+using SharpClaw.Contracts.DTOs.Models;
+using SharpClaw.Contracts.Entities.Core;
+using SharpClaw.Contracts.Providers;
+
 namespace SharpClaw.Core.Providers;
 
 /// <summary>
@@ -27,4 +32,116 @@ public sealed class ModelCatalogEngine
             ? string.Join(',', capabilityTags)
             : null;
     }
+
+    /// <summary>Creates a model entity from a request and loaded provider.</summary>
+    public ModelDB Create(CreateModelRequest request, ProviderDB provider)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(provider);
+
+        return new ModelDB
+        {
+            Name = request.Name,
+            ProviderId = provider.Id,
+            Provider = provider,
+            CustomId = request.CustomId,
+            CapabilityTagsRaw = SerializeCapabilityTags(request.CapabilityTags)
+        };
+    }
+
+    /// <summary>Applies an update request to an existing model entity.</summary>
+    public void ApplyUpdate(
+        ModelDB model,
+        UpdateModelRequest request,
+        bool enforceUniqueNames,
+        bool nameExists)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Name is not null)
+        {
+            if (enforceUniqueNames)
+                EnsureModelNameAvailable(request.Name, nameExists);
+
+            model.Name = request.Name;
+        }
+
+        if (request.CustomId is not null)
+            model.CustomId = request.CustomId;
+
+        if (request.CapabilityTags is not null)
+            model.CapabilityTagsRaw = SerializeCapabilityTags(request.CapabilityTags);
+    }
+
+    /// <summary>
+    /// Refreshes a model's stored capability tags from a resolver. Returns
+    /// <see langword="true"/> when the persisted value changed.
+    /// </summary>
+    public bool RefreshCapabilityTags(
+        ModelDB model,
+        IModelCapabilityResolver resolver)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(resolver);
+
+        var tags = resolver.Resolve(model.Name);
+        var tagsRaw = SerializeCapabilityTags(tags);
+        if (model.CapabilityTagsRaw == tagsRaw)
+            return false;
+
+        model.CapabilityTagsRaw = tagsRaw;
+        return true;
+    }
+
+    /// <summary>
+    /// Builds model entities for provider model ids that do not already exist
+    /// in the supplied provider-owned name set.
+    /// </summary>
+    public IReadOnlyList<ModelDB> BuildMissingModels(
+        Guid providerId,
+        IEnumerable<string> modelIds,
+        ISet<string> existingNames,
+        IModelCapabilityResolver capabilities)
+    {
+        ArgumentNullException.ThrowIfNull(modelIds);
+        ArgumentNullException.ThrowIfNull(existingNames);
+        ArgumentNullException.ThrowIfNull(capabilities);
+
+        return modelIds
+            .Where(id => !existingNames.Contains(id))
+            .Select(id => new ModelDB
+            {
+                Name = id,
+                ProviderId = providerId,
+                CapabilityTagsRaw = SerializeCapabilityTags(
+                    capabilities.Resolve(id))
+            })
+            .ToList();
+    }
+
+    /// <summary>Projects a loaded model entity into its public response.</summary>
+    public ModelResponse ToResponse(ModelDB model, ProviderDB? provider = null)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        provider ??= model.Provider;
+
+        return new ModelResponse(
+            model.Id,
+            model.Name,
+            model.ProviderId,
+            provider.Name,
+            model.CustomId,
+            model.CapabilityTags);
+    }
+
+    /// <summary>Returns the EF-translatable model response projection.</summary>
+    public Expression<Func<ModelDB, ModelResponse>> ToResponseProjection() =>
+        model => new ModelResponse(
+            model.Id,
+            model.Name,
+            model.ProviderId,
+            model.Provider.Name,
+            model.CustomId,
+            model.CapabilityTags);
 }
