@@ -1,4 +1,5 @@
 using SharpClaw.Contracts.DTOs.DefaultResources;
+using SharpClaw.Contracts.Entities.Core.Context;
 using SharpClaw.Core.Permissions;
 
 namespace SharpClaw.Core.Resources;
@@ -115,6 +116,67 @@ public sealed class DefaultResourceEngine
             .FirstOrDefault(access =>
                 access.ResourceType == resourceType && access.IsDefault)
             ?.ResourceId;
+    }
+
+    /// <summary>
+    /// Applies a bulk default-resource write to the supplied set. A null
+    /// value removes the matching entry; missing keys are left unchanged.
+    /// </summary>
+    public static void Apply(
+        DefaultResourceSetDB defaultResourceSet,
+        SetDefaultResourcesRequest request,
+        Action<DefaultResourceEntryDB>? removeEntry = null)
+    {
+        ArgumentNullException.ThrowIfNull(defaultResourceSet);
+        ArgumentNullException.ThrowIfNull(request);
+
+        foreach (var (key, value) in request.Entries)
+            ApplyKey(defaultResourceSet, key, value, removeEntry);
+    }
+
+    /// <summary>
+    /// Applies a single default-resource key mutation to the supplied set.
+    /// Existing keys are matched case-insensitively and stored normalized.
+    /// </summary>
+    public static void ApplyKey(
+        DefaultResourceSetDB defaultResourceSet,
+        string key,
+        Guid? value,
+        Action<DefaultResourceEntryDB>? removeEntry = null)
+    {
+        ArgumentNullException.ThrowIfNull(defaultResourceSet);
+
+        var normalised = NormalizeKey(key);
+        var existing = defaultResourceSet.Entries.FirstOrDefault(
+            e => string.Equals(
+                e.ResourceKey,
+                normalised,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (value is null)
+        {
+            if (existing is not null)
+            {
+                defaultResourceSet.Entries.Remove(existing);
+                removeEntry?.Invoke(existing);
+            }
+
+            return;
+        }
+
+        if (existing is not null)
+        {
+            existing.ResourceId = value.Value;
+        }
+        else
+        {
+            defaultResourceSet.Entries.Add(new DefaultResourceEntryDB
+            {
+                DefaultResourceSetId = defaultResourceSet.Id,
+                ResourceKey = normalised,
+                ResourceId = value.Value
+            });
+        }
     }
 
 }
