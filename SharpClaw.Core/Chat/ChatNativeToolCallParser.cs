@@ -18,6 +18,50 @@ public sealed class ChatNativeToolCallParser
         "Error: unrecognized tool or malformed arguments.";
 
     /// <summary>
+    /// Resolves a native provider tool call into the parsed SharpClaw job
+    /// call representation, including optional module-owned resource-id
+    /// extraction when no standard resource id argument is present.
+    /// </summary>
+    public async Task<ParsedChatToolCall?> ResolveAsync(
+        ChatNativeToolCallResolutionRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var plan = BuildParsePlan(
+            request.ToolCall,
+            request.ModuleRegistry,
+            request.ExecutionPlanner);
+        if (plan is null)
+            return null;
+
+        request.Trace?.Invoke(
+            $"[ParseToolCall] Module tool: {plan.ActionKey} \u2192 {plan.ModuleId}.{plan.ToolName}");
+
+        Guid? resourceId = plan.DirectResourceId;
+        if (resourceId is null && plan.RequiresResourceExtractor)
+        {
+            var extractor = request.ModuleRegistry.GetResourceIdExtractor(
+                plan.ActionKey);
+            if (extractor is not null
+                && request.ExtractResourceIdAsync is not null)
+            {
+                resourceId = await request.ExtractResourceIdAsync(
+                    new ChatNativeToolCallResourceExtraction(
+                        plan.ActionKey,
+                        plan.ArgumentsJson,
+                        extractor),
+                    ct);
+            }
+        }
+
+        request.Trace?.Invoke(
+            $"[ParseToolCall] ResourceId={resourceId?.ToString() ?? "(null)"} from args: {request.ToolCall.ArgumentsJson}");
+
+        return CompleteParse(plan, resourceId);
+    }
+
+    /// <summary>
     /// Builds a parse plan for a module tool call, or returns null when the
     /// tool name does not resolve to a registered module tool.
     /// </summary>
@@ -131,6 +175,25 @@ public sealed record ChatNativeToolCallParsePlan(
     string ScriptJson,
     Guid? DirectResourceId,
     bool RequiresResourceExtractor);
+
+/// <summary>
+/// Inputs required by Core to resolve a native provider tool call.
+/// </summary>
+public sealed record ChatNativeToolCallResolutionRequest(
+    ChatToolCall ToolCall,
+    ModuleRegistry ModuleRegistry,
+    ModuleToolExecutionPlanner ExecutionPlanner,
+    Func<ChatNativeToolCallResourceExtraction, CancellationToken, Task<Guid?>>? ExtractResourceIdAsync = null,
+    Action<string>? Trace = null);
+
+/// <summary>
+/// Resource-id extraction callback requested by Core when a module registered
+/// a custom extractor for the native tool call action key.
+/// </summary>
+public sealed record ChatNativeToolCallResourceExtraction(
+    string ActionKey,
+    string ArgumentsJson,
+    Func<IServiceProvider, string, CancellationToken, Task<Guid?>> Extractor);
 
 /// <summary>
 /// Parsed provider tool call ready to become an agent job request.
