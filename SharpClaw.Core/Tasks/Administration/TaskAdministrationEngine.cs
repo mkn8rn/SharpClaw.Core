@@ -280,6 +280,26 @@ public sealed class TaskAdministrationEngine
     }
 
     /// <summary>
+    /// Marks an instance from a previous process lifetime as failed because
+    /// SharpClaw task side effects cannot be safely replayed.
+    /// </summary>
+    public TaskRestartRecoveryPlan ApplyRestartRecovery(TaskInstanceDB instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        var previous = instance.Status;
+        instance.Status = TaskInstanceStatus.Failed;
+        instance.ErrorMessage =
+            $"Instance was {previous} when the application restarted. " +
+            "Manual restart required.";
+        instance.CompletedAt ??= _timeProvider.GetUtcNow();
+
+        return new TaskRestartRecoveryPlan(
+            previous,
+            $"Recovery: instance was {previous} at startup \u2014 marked Failed.");
+    }
+
+    /// <summary>
     /// Updates the latest output snapshot and creates the output history row.
     /// </summary>
     public TaskOutputEntryDB ApplyOutput(
@@ -600,3 +620,10 @@ public sealed record TaskDefinitionUpdatePreparation(
     IReadOnlyList<TaskRequirementDefinition> Requirements,
     IReadOnlyList<TaskTriggerDefinition> Triggers,
     bool SourceWasUpdated);
+
+/// <summary>
+/// Result of applying the SharpClaw restart recovery policy to a task instance.
+/// </summary>
+public sealed record TaskRestartRecoveryPlan(
+    TaskInstanceStatus PreviousStatus,
+    string LogMessage);
