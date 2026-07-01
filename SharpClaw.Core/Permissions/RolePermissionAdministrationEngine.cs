@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using SharpClaw.Contracts;
 using SharpClaw.Contracts.DTOs.Roles;
 using SharpClaw.Contracts.Entities.Core.Access;
@@ -11,6 +12,102 @@ namespace SharpClaw.Core.Permissions;
 /// </summary>
 public sealed class RolePermissionAdministrationEngine
 {
+    /// <summary>
+    /// Creates a role with an empty permission set attached.
+    /// </summary>
+    public RoleDB CreateRole(string name)
+    {
+        return new RoleDB
+        {
+            Name = NormalizeRoleName(name),
+            PermissionSet = new PermissionSetDB()
+        };
+    }
+
+    /// <summary>
+    /// Creates and attaches a permission set for a role that has none.
+    /// </summary>
+    public PermissionSetDB CreatePermissionSetForRole(RoleDB role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        var permissionSet = new PermissionSetDB();
+        role.PermissionSet = permissionSet;
+        return permissionSet;
+    }
+
+    /// <summary>
+    /// Applies a validated role rename.
+    /// </summary>
+    public void RenameRole(RoleDB role, string newName)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        role.Name = NormalizeRoleName(newName);
+    }
+
+    /// <summary>
+    /// Plans deletion for a role and detaches assigned users.
+    /// </summary>
+    public RoleDeletionPlan PlanDeleteRole(RoleDB role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        foreach (var user in role.Users)
+            user.RoleId = null;
+
+        var permissionSet = role.PermissionSet;
+        return new RoleDeletionPlan(
+            role,
+            permissionSet,
+            permissionSet?.GlobalFlags.ToList() ?? [],
+            permissionSet?.ResourceAccesses.ToList() ?? []);
+    }
+
+    /// <summary>
+    /// Projects a role entity to its public response shape.
+    /// </summary>
+    public RoleResponse ToResponse(RoleDB role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        return new RoleResponse(role.Id, role.Name, role.PermissionSetId);
+    }
+
+    /// <summary>
+    /// Projects roles to their public response shape.
+    /// </summary>
+    public Expression<Func<RoleDB, RoleResponse>> ToResponseProjection() =>
+        role => new RoleResponse(role.Id, role.Name, role.PermissionSetId);
+
+    /// <summary>
+    /// Projects a role and permission set to a full permissions response.
+    /// </summary>
+    public RolePermissionsResponse ToPermissionsResponse(
+        RoleDB role,
+        PermissionSetDB? permissionSet)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+
+        return new RolePermissionsResponse(
+            RoleId: role.Id,
+            RoleName: role.Name,
+            GlobalFlags: permissionSet?.GlobalFlags
+                .ToDictionary(flag => flag.FlagKey, flag => flag.Clearance)
+                ?? new Dictionary<string, PermissionClearance>(),
+            ResourceGrants: permissionSet is null
+                ? new Dictionary<string, IReadOnlyList<ResourceGrant>>()
+                : permissionSet.ResourceAccesses
+                    .GroupBy(access => access.ResourceType)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => (IReadOnlyList<ResourceGrant>)group
+                            .Select(access => new ResourceGrant(
+                                access.ResourceId,
+                                access.Clearance))
+                            .ToList()));
+    }
+
     /// <summary>
     /// Validates that the caller may grant every requested permission.
     /// </summary>
@@ -51,7 +148,7 @@ public sealed class RolePermissionAdministrationEngine
     {
         ArgumentNullException.ThrowIfNull(existingRoleNames);
 
-        var normalized = name.Trim();
+        var normalized = NormalizeRoleName(name);
         if (existingRoleNames.Any(existing =>
                 existing.Trim().Equals(
                     normalized,
@@ -205,4 +302,27 @@ public sealed class RolePermissionAdministrationEngine
             }
         }
     }
+
+    private static string NormalizeRoleName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException(
+                "Role name cannot be empty.",
+                nameof(name));
+
+        return name.Trim();
+    }
 }
+
+/// <summary>
+/// Store-neutral description of rows affected by a role delete.
+/// </summary>
+/// <param name="Role">The role being deleted.</param>
+/// <param name="PermissionSet">The owned permission set, when present.</param>
+/// <param name="GlobalFlags">Global flag rows owned by the permission set.</param>
+/// <param name="ResourceAccesses">Resource grant rows owned by the permission set.</param>
+public sealed record RoleDeletionPlan(
+    RoleDB Role,
+    PermissionSetDB? PermissionSet,
+    IReadOnlyList<GlobalFlagDB> GlobalFlags,
+    IReadOnlyList<ResourceAccessDB> ResourceAccesses);
