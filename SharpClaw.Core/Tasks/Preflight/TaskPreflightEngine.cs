@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using SharpClaw.Contracts.Providers;
 using SharpClaw.Core.Tasks.Models;
 
 namespace SharpClaw.Core.Tasks.Preflight;
@@ -28,6 +29,53 @@ public sealed class TaskPreflightEngine
         }
 
         return BuildResult(findings);
+    }
+
+    /// <summary>
+    /// Builds host runtime facts and evaluates runtime task requirements.
+    /// </summary>
+    public async Task<TaskPreflightResult> CheckRuntimeAsync(
+        IReadOnlyList<TaskRequirementDefinition> requirements,
+        IReadOnlyDictionary<string, object?> paramValues,
+        Guid? callerAgentId,
+        ITaskPreflightHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var facts = await BuildRuntimeFactsAsync(callerAgentId, host, ct);
+        return CheckRuntime(
+            requirements,
+            paramValues,
+            facts,
+            callerAgentId is not null);
+    }
+
+    /// <summary>
+    /// Builds the normalized runtime facts used by requirement evaluation.
+    /// </summary>
+    public async Task<TaskPreflightRuntimeFacts> BuildRuntimeFactsAsync(
+        Guid? callerAgentId,
+        ITaskPreflightHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var providers = BuildProviderStates(
+            host.ProviderPlugins,
+            await host.ListConfiguredProvidersAsync(ct));
+        var models = BuildModelStates(
+            await host.ListConfiguredModelsAsync(ct));
+        var enabledModuleIds = await BuildEnabledModuleSetAsync(host, ct);
+        var callerPermissionFlags = callerAgentId is { } concreteCallerAgentId
+            ? await host.ListCallerPermissionFlagsAsync(concreteCallerAgentId, ct)
+            : new HashSet<string>(StringComparer.Ordinal);
+
+        return new TaskPreflightRuntimeFacts(
+            providers,
+            models,
+            enabledModuleIds,
+            callerPermissionFlags);
     }
 
     /// <summary>
@@ -151,6 +199,55 @@ public sealed class TaskPreflightEngine
         var isBlocked = materialized.Any(f =>
             f.Severity == TaskDiagnosticSeverity.Error && !f.Passed);
         return new TaskPreflightResult(isBlocked, materialized);
+    }
+
+    private static IReadOnlyList<TaskPreflightProviderState> BuildProviderStates(
+        IEnumerable<IProviderPlugin> providerPlugins,
+        IReadOnlyList<TaskPreflightConfiguredProvider> configuredProviders)
+    {
+        ArgumentNullException.ThrowIfNull(providerPlugins);
+        ArgumentNullException.ThrowIfNull(configuredProviders);
+
+        return providerPlugins
+            .Select(plugin =>
+            {
+                var configured = configuredProviders.FirstOrDefault(
+                    provider => provider.ProviderKey == plugin.ProviderKey);
+                return new TaskPreflightProviderState(
+                    plugin.ProviderKey,
+                    plugin.RequiresApiKey,
+                    configured is not null,
+                    configured?.ProtectedApiKey is not null);
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<TaskPreflightModelState> BuildModelStates(
+        IReadOnlyList<TaskPreflightConfiguredModel> configuredModels)
+    {
+        ArgumentNullException.ThrowIfNull(configuredModels);
+
+        return configuredModels
+            .Select(model => new TaskPreflightModelState(
+                model.Id,
+                model.Name,
+                model.CustomId,
+                ParseCapabilityTags(model.CapabilityTagsRaw)))
+            .ToList();
+    }
+
+    private static async Task<IReadOnlySet<string>> BuildEnabledModuleSetAsync(
+        ITaskPreflightHost host,
+        CancellationToken ct)
+    {
+        var result = new HashSet<string>(
+            await host.ListPersistedEnabledModuleIdsAsync(ct),
+            StringComparer.Ordinal);
+
+        foreach (var moduleId in await host.ListRuntimeEnabledModuleIdsAsync(ct))
+            result.Add(moduleId);
+
+        return result;
     }
 
     private static TaskPreflightFinding EvaluateProvider(
@@ -345,6 +442,18 @@ public sealed class TaskPreflightEngine
         return model.CapabilityTags.Any(tag =>
             tag.Equals(capabilityTag, StringComparison.OrdinalIgnoreCase));
     }
+
+    private static IReadOnlySet<string> ParseCapabilityTags(string? tagsRaw)
+    {
+        return string.IsNullOrWhiteSpace(tagsRaw)
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(
+                tagsRaw.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries
+                    | StringSplitOptions.TrimEntries),
+                StringComparer.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>
@@ -363,3 +472,49 @@ public sealed record TaskPreflightFinding(
     bool Passed,
     string Message,
     string? ParameterName = null);
+
+/// <summary>
+/// Host boundary for building runtime task preflight facts.
+/// </summary>
+public interface ITaskPreflightHost
+{
+    /// <summary>Provider plugins visible to the current runtime.</summary>
+    IEnumerable<IProviderPlugin> ProviderPlugins { get; }
+
+    /// <summary>Loads configured providers from host persistence.</summary>
+    Task<IReadOnlyList<TaskPreflightConfiguredProvider>> ListConfiguredProvidersAsync(
+        CancellationToken ct);
+
+    /// <summary>Loads configured models from host persistence.</summary>
+    Task<IReadOnlyList<TaskPreflightConfiguredModel>> ListConfiguredModelsAsync(
+        CancellationToken ct);
+
+    /// <summary>Loads module IDs marked enabled in host persistence.</summary>
+    Task<IReadOnlySet<string>> ListPersistedEnabledModuleIdsAsync(
+        CancellationToken ct);
+
+    /// <summary>Loads module IDs that are enabled by runtime state.</summary>
+    Task<IReadOnlySet<string>> ListRuntimeEnabledModuleIdsAsync(
+        CancellationToken ct);
+
+    /// <summary>Loads granted permission flag keys for the caller agent.</summary>
+    Task<IReadOnlySet<string>> ListCallerPermissionFlagsAsync(
+        Guid callerAgentId,
+        CancellationToken ct);
+}
+
+/// <summary>
+/// Raw provider configuration supplied by a task preflight host.
+/// </summary>
+public sealed record TaskPreflightConfiguredProvider(
+    string ProviderKey,
+    string? ProtectedApiKey);
+
+/// <summary>
+/// Raw model configuration supplied by a task preflight host.
+/// </summary>
+public sealed record TaskPreflightConfiguredModel(
+    Guid Id,
+    string Name,
+    string? CustomId,
+    string? CapabilityTagsRaw);
