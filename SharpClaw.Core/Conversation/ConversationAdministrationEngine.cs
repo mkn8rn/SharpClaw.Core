@@ -16,6 +16,64 @@ public sealed class ConversationAdministrationEngine(
     ConversationTopologyEngine conversation,
     ChatRuntimeInvalidationPlanner invalidations)
 {
+    public async Task<ChannelResponse?> GetChannelAsync(
+        Guid channelId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var channel = await host.LoadChannelAsync(channelId, ct);
+        return channel is not null
+            ? conversation.ToChannelResponse(channel)
+            : null;
+    }
+
+    public async Task<IReadOnlyList<ChannelResponse>> ListChannelsAsync(
+        Guid? agentId,
+        Guid? contextId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var channels = await host.ListChannelsAsync(agentId, contextId, ct);
+        return channels
+            .OrderByDescending(channel => channel.UpdatedAt)
+            .Select(conversation.ToChannelResponse)
+            .ToList();
+    }
+
+    public async Task<ChannelResponse?> GetLatestActiveChannelAsync(
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        ChannelDB? channel = null;
+        var latestChannelId = await host.LoadLatestMessageChannelIdAsync(ct);
+        if (latestChannelId is not null)
+            channel = await host.LoadChannelAsync(latestChannelId.Value, ct);
+
+        channel ??= await host.LoadMostRecentlyCreatedChannelAsync(ct);
+        return channel is not null
+            ? conversation.ToChannelResponse(channel)
+            : null;
+    }
+
+    public async Task<ChannelAllowedAgentsResponse?> GetChannelAllowedAgentsAsync(
+        Guid channelId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var channel = await host.LoadChannelAsync(channelId, ct);
+        return channel is not null
+            ? conversation.ToChannelAllowedAgentsResponse(channel)
+            : null;
+    }
+
     public async Task<ChannelResponse> CreateChannelAsync(
         CreateChannelRequest request,
         IConversationAdministrationHost host,
@@ -190,6 +248,46 @@ public sealed class ConversationAdministrationEngine(
         return conversation.ToChannelAllowedAgentsResponse(channel);
     }
 
+    public async Task<ContextResponse?> GetContextAsync(
+        Guid contextId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var context = await host.LoadContextAsync(contextId, ct);
+        return context is not null
+            ? conversation.ToContextResponse(context)
+            : null;
+    }
+
+    public async Task<IReadOnlyList<ContextResponse>> ListContextsAsync(
+        Guid? agentId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var contexts = await host.ListContextsAsync(agentId, ct);
+        return contexts
+            .OrderByDescending(context => context.UpdatedAt)
+            .Select(conversation.ToContextResponse)
+            .ToList();
+    }
+
+    public async Task<ContextAllowedAgentsResponse?> GetContextAllowedAgentsAsync(
+        Guid contextId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var context = await host.LoadContextAsync(contextId, ct);
+        return context is not null
+            ? conversation.ToContextAllowedAgentsResponse(context)
+            : null;
+    }
+
     public async Task<ContextResponse> CreateContextAsync(
         CreateContextRequest request,
         IConversationAdministrationHost host,
@@ -334,6 +432,33 @@ public sealed class ConversationAdministrationEngine(
         return conversation.ToThreadResponse(thread);
     }
 
+    public async Task<ThreadResponse?> GetThreadAsync(
+        Guid threadId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var thread = await host.LoadThreadAsync(threadId, ct);
+        return thread is not null
+            ? conversation.ToThreadResponse(thread)
+            : null;
+    }
+
+    public async Task<IReadOnlyList<ThreadResponse>> ListThreadsAsync(
+        Guid channelId,
+        IConversationAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var threads = await host.ListThreadsAsync(channelId, ct);
+        return threads
+            .OrderByDescending(thread => thread.UpdatedAt)
+            .Select(conversation.ToThreadResponse)
+            .ToList();
+    }
+
     public async Task<ThreadResponse?> UpdateThreadAsync(
         Guid threadId,
         UpdateThreadRequest request,
@@ -441,6 +566,23 @@ public interface IConversationAdministrationHost
     Task<ChatThreadDB?> LoadThreadAsync(Guid threadId, CancellationToken ct);
 
     Task<bool> ChannelExistsAsync(Guid channelId, CancellationToken ct);
+
+    Task<IReadOnlyList<ChannelDB>> ListChannelsAsync(
+        Guid? agentId,
+        Guid? contextId,
+        CancellationToken ct);
+
+    Task<Guid?> LoadLatestMessageChannelIdAsync(CancellationToken ct);
+
+    Task<ChannelDB?> LoadMostRecentlyCreatedChannelAsync(CancellationToken ct);
+
+    Task<IReadOnlyList<ChannelContextDB>> ListContextsAsync(
+        Guid? agentId,
+        CancellationToken ct);
+
+    Task<IReadOnlyList<ChatThreadDB>> ListThreadsAsync(
+        Guid channelId,
+        CancellationToken ct);
 
     Task<IReadOnlyList<string>> ListChannelTitlesAsync(
         Guid? excludeId,
