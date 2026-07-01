@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SharpClaw.Contracts;
 using SharpClaw.Contracts.DTOs.AgentActions;
+using SharpClaw.Contracts.DTOs.Chat;
 using SharpClaw.Contracts.DTOs.Tasks;
 using SharpClaw.Contracts.Models;
 using SharpClaw.Contracts.Providers;
@@ -297,6 +299,237 @@ public sealed class ChatNativeToolLoopEngine(
         }
     }
 
+    /// <summary>
+    /// Streams provider output and native tool-loop events until the model
+    /// stops asking for tools, the round cap is reached, or cancellation is
+    /// requested.
+    /// </summary>
+    public async IAsyncEnumerable<ChatNativeToolStreamingLoopEvent> StreamAsync(
+        ChatNativeToolLoopRequest request,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Host);
+
+        var cancellationToken = ct.CanBeCanceled
+            ? ct
+            : request.CancellationToken;
+        var messages = new List<ToolAwareMessage>(
+            request.History.Count);
+        foreach (var msg in request.History)
+        {
+            messages.Add(new ToolAwareMessage
+            {
+                Role = msg.Role,
+                Content = msg.Content,
+                ProviderMetadataJson = msg.ProviderMetadataJson
+            });
+        }
+
+        var supportsVision = request.ModelCapabilityTags.Contains(
+            WellKnownCapabilityKeys.Vision);
+        var jobResults = new List<AgentJobResponse>();
+        var fullContent = new StringBuilder();
+        var rounds = 0;
+        var totalPromptTokens = 0;
+        var totalCompletionTokens = 0;
+        var roundJobIds = new List<Guid>();
+        string? finalProviderMetadataJson = null;
+        var logTiming = request.TimingRequestId is not null
+            && _logger.IsEnabled(LogLevel.Debug);
+        var providerRound = 0;
+        var inlinePermissionCache =
+            new Dictionary<ChatInlineToolPermissionCacheKey, AgentActionResult>();
+
+        while (true)
+        {
+            providerRound++;
+            var providerRoundTiming = Stopwatch.StartNew();
+            ChatCompletionResult? roundResult = null;
+            var roundDeltaContent = new StringBuilder();
+
+            await foreach (var chunk in request.Client.StreamChatCompletionWithToolsAsync(
+                request.HttpClient,
+                request.ApiKey,
+                request.ModelName,
+                request.SystemPrompt,
+                messages,
+                request.EffectiveTools,
+                request.MaxCompletionTokens,
+                request.ProviderParameters,
+                request.CompletionParameters,
+                cancellationToken))
+            {
+                if (chunk.Delta is not null)
+                {
+                    roundDeltaContent.Append(chunk.Delta);
+                    yield return ChatNativeToolStreamingLoopEvent.TextDelta(
+                        chunk.Delta);
+                }
+
+                if (chunk.IsFinished)
+                    roundResult = chunk.Finished;
+            }
+
+            if (roundResult is null)
+            {
+                fullContent.Append(roundDeltaContent);
+                providerRoundTiming.Stop();
+                if (logTiming)
+                {
+                    _logger.LogDebug(
+                        "Streaming chat request {RequestId} provider round {Round} ended without a finished result after {ProviderRoundMs}ms. ElapsedMs={ElapsedMs}",
+                        request.TimingRequestId,
+                        providerRound,
+                        providerRoundTiming.ElapsedMilliseconds,
+                        request.GetElapsedMilliseconds?.Invoke());
+                }
+
+                break;
+            }
+            providerRoundTiming.Stop();
+
+            if (roundResult.Usage is { } roundUsage)
+            {
+                totalPromptTokens += roundUsage.PromptTokens;
+                totalCompletionTokens += roundUsage.CompletionTokens;
+            }
+
+            if (logTiming)
+            {
+                _logger.LogDebug(
+                    "Streaming chat request {RequestId} provider round {Round} completed in {ProviderRoundMs}ms. ToolCalls={ToolCalls} PromptTokens={PromptTokens} CompletionTokens={CompletionTokens} ContentChars={ContentChars} ElapsedMs={ElapsedMs}",
+                    request.TimingRequestId,
+                    providerRound,
+                    providerRoundTiming.ElapsedMilliseconds,
+                    roundResult.ToolCalls.Count,
+                    roundResult.Usage?.PromptTokens ?? 0,
+                    roundResult.Usage?.CompletionTokens ?? 0,
+                    roundResult.Content?.Length ?? 0,
+                    request.GetElapsedMilliseconds?.Invoke());
+            }
+
+            var roundContent = roundResult.Content;
+            if (string.IsNullOrEmpty(roundContent)
+                && roundDeltaContent.Length > 0)
+            {
+                roundContent = roundDeltaContent.ToString();
+            }
+
+            fullContent.Append(roundContent ?? "");
+
+            if (!roundResult.HasToolCalls
+                || ++rounds > request.MaxToolCallRounds)
+            {
+                finalProviderMetadataJson = roundResult.ProviderMetadataJson;
+                break;
+            }
+
+            messages.Add(ToolAwareMessage.AssistantWithToolCalls(
+                roundResult.ToolCalls,
+                roundResult.Content,
+                roundResult.ProviderMetadataJson));
+
+            fullContent.Clear();
+            roundJobIds.Clear();
+
+            foreach (var toolCall in roundResult.ToolCalls)
+            {
+                var (handled, taskResult) =
+                    await request.Host.TryHandleTaskToolAsync(
+                        toolCall,
+                        request.TaskContext,
+                        cancellationToken);
+                if (handled)
+                {
+                    messages.Add(ToolAwareMessage.ToolResult(
+                        toolCall.Id,
+                        taskResult ?? ""));
+                    var taskNotation =
+                        ToolNotationFormatter.ForTaskTool(toolCall.Name);
+                    fullContent.Append(taskNotation);
+                    yield return ChatNativeToolStreamingLoopEvent.TextDelta(
+                        taskNotation);
+                    continue;
+                }
+
+                if (request.Host.IsInlineTool(toolCall.Name))
+                {
+                    var inlineResult =
+                        await request.Host.ExecuteInlineToolAsync(
+                            toolCall,
+                            request.AgentId,
+                            request.ChannelId,
+                            request.ThreadId,
+                            inlinePermissionCache,
+                            cancellationToken);
+                    messages.Add(ToolAwareMessage.ToolResult(
+                        toolCall.Id,
+                        inlineResult));
+                    var inlineNotation =
+                        ToolNotationFormatter.ForInlineTool(toolCall.Name);
+                    fullContent.Append(inlineNotation);
+                    yield return ChatNativeToolStreamingLoopEvent.TextDelta(
+                        inlineNotation);
+                    continue;
+                }
+
+                var nativeTool =
+                    await request.Host.ExecuteNativeJobToolAsync(
+                        toolCall,
+                        request.AgentId,
+                        request.ChannelId,
+                        supportsVision,
+                        emitStreamEvents: true,
+                        request.ApprovalCallback,
+                        cancellationToken);
+
+                messages.Add(nativeTool.ToolResultMessage);
+                if (!nativeTool.Parsed)
+                    continue;
+
+                if (nativeTool.SubmittedJobId is { } submittedJobId)
+                    roundJobIds.Add(submittedJobId);
+
+                foreach (var streamEvent in nativeTool.StreamEvents)
+                {
+                    yield return ChatNativeToolStreamingLoopEvent.StreamEvent(
+                        streamEvent);
+                }
+
+                if (nativeTool.JobResponse is not null)
+                    jobResults.Add(nativeTool.JobResponse);
+
+                fullContent.Append(nativeTool.ToolNotation);
+                yield return ChatNativeToolStreamingLoopEvent.BufferedText(
+                    nativeTool.ToolNotation);
+            }
+
+            if (roundJobIds.Count > 0 && roundResult.Usage is { } usage)
+            {
+                await request.Host.RecordRoundTokenUsageAsync(
+                    roundJobIds,
+                    usage.PromptTokens,
+                    usage.CompletionTokens,
+                    cancellationToken);
+                _toolResults.ApplyRoundTokenUsageToJobResponses(
+                    jobResults,
+                    roundJobIds,
+                    usage.PromptTokens,
+                    usage.CompletionTokens);
+            }
+        }
+
+        yield return ChatNativeToolStreamingLoopEvent.Completed(
+            new ChatNativeToolStreamingLoopResult(
+                fullContent.ToString(),
+                jobResults,
+                totalPromptTokens,
+                totalCompletionTokens,
+                finalProviderMetadataJson,
+                providerRound));
+    }
+
     private ChatNativeToolLoopResult BuildEnvelopeFailureResult(
         StringBuilder toolNotation,
         IReadOnlyList<AgentJobResponse> jobResults,
@@ -396,3 +629,65 @@ public sealed record ChatNativeToolLoopResult(
     int TotalPromptTokens = 0,
     int TotalCompletionTokens = 0,
     string? ProviderMetadataJson = null);
+
+/// <summary>
+/// Stream item emitted by the Core native chat streaming loop.
+/// </summary>
+public sealed record ChatNativeToolStreamingLoopEvent(
+    ChatNativeToolStreamingLoopEventKind Kind,
+    string? Text = null,
+    ChatStreamEvent? StreamEventValue = null,
+    ChatNativeToolStreamingLoopResult? Result = null)
+{
+    /// <summary>Emits text that should be sent to the chat stream client.</summary>
+    public static ChatNativeToolStreamingLoopEvent TextDelta(string text) =>
+        new(ChatNativeToolStreamingLoopEventKind.TextDelta, Text: text);
+
+    /// <summary>
+    /// Emits text that should be retained for partial persistence but not
+    /// sent as a text delta.
+    /// </summary>
+    public static ChatNativeToolStreamingLoopEvent BufferedText(string text) =>
+        new(ChatNativeToolStreamingLoopEventKind.BufferedText, Text: text);
+
+    /// <summary>Emits a non-text chat stream event.</summary>
+    public static ChatNativeToolStreamingLoopEvent StreamEvent(
+        ChatStreamEvent streamEvent) =>
+        new(
+            ChatNativeToolStreamingLoopEventKind.StreamEvent,
+            StreamEventValue: streamEvent);
+
+    /// <summary>Emits the final streaming loop result.</summary>
+    public static ChatNativeToolStreamingLoopEvent Completed(
+        ChatNativeToolStreamingLoopResult result) =>
+        new(ChatNativeToolStreamingLoopEventKind.Completed, Result: result);
+}
+
+/// <summary>
+/// Kind of native chat streaming loop item.
+/// </summary>
+public enum ChatNativeToolStreamingLoopEventKind
+{
+    /// <summary>Text sent to the stream client and retained for persistence.</summary>
+    TextDelta,
+
+    /// <summary>Text retained for persistence without client streaming.</summary>
+    BufferedText,
+
+    /// <summary>A structured chat stream event.</summary>
+    StreamEvent,
+
+    /// <summary>The final native streaming loop result.</summary>
+    Completed,
+}
+
+/// <summary>
+/// Result of a completed Core native chat streaming loop.
+/// </summary>
+public sealed record ChatNativeToolStreamingLoopResult(
+    string AssistantContent,
+    IReadOnlyList<AgentJobResponse> JobResults,
+    int TotalPromptTokens = 0,
+    int TotalCompletionTokens = 0,
+    string? ProviderMetadataJson = null,
+    int ProviderRounds = 0);
