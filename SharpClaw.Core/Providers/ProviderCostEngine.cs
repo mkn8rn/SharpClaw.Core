@@ -25,6 +25,71 @@ public sealed class ProviderCostEngine
         return (start, end);
     }
 
+    /// <summary>
+    /// Fetches the live cost report for one configured provider.
+    /// </summary>
+    public async Task<ProviderCostResponse?> GetCostAsync(
+        Guid providerId,
+        int days,
+        DateTimeOffset? startDate,
+        DateTimeOffset? endDate,
+        IProviderCostHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var provider = await host.LoadProviderAsync(providerId, ct);
+        if (provider is null)
+            return null;
+
+        var (periodStart, periodEnd) = ResolvePeriod(
+            days,
+            startDate,
+            endDate);
+
+        return await GetCostForProviderAsync(
+            provider.Value,
+            periodStart,
+            periodEnd,
+            host,
+            ct);
+    }
+
+    /// <summary>
+    /// Fetches and aggregates live cost reports for configured providers.
+    /// </summary>
+    public async Task<ProviderCostTotalResponse> GetTotalCostAsync(
+        int days,
+        DateTimeOffset? startDate,
+        DateTimeOffset? endDate,
+        bool includeAll,
+        IProviderCostHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var (periodStart, periodEnd) = ResolvePeriod(
+            days,
+            startDate,
+            endDate);
+        var providers = await host.ListProvidersForCostAsync(includeAll, ct);
+        var results = new List<ProviderCostResponse>(providers.Count);
+
+        foreach (var provider in providers)
+        {
+            var cost = await GetCostForProviderAsync(
+                provider,
+                periodStart,
+                periodEnd,
+                host,
+                ct);
+            if (cost is not null)
+                results.Add(cost);
+        }
+
+        return CreateTotalResponse(periodStart, periodEnd, results);
+    }
+
     /// <summary>Projects a successful provider cost feed result.</summary>
     public ProviderCostResponse CreateFeedResponse(
         ProviderCostProvider provider,
@@ -120,6 +185,59 @@ public sealed class ProviderCostEngine
             periodEnd,
             providers);
     }
+
+    private async Task<ProviderCostResponse> GetCostForProviderAsync(
+        ProviderCostProviderConfiguration provider,
+        DateTimeOffset periodStart,
+        DateTimeOffset periodEnd,
+        IProviderCostHost host,
+        CancellationToken ct)
+    {
+        var plugin = host.GetProviderPlugin(provider.ProviderKey);
+        var costFeed = plugin?.CostFeed;
+        var isLocal = plugin is { RequiresApiKey: false };
+        var costProvider = new ProviderCostProvider(
+            provider.Id,
+            provider.Name,
+            provider.ProviderKey);
+
+        if (costFeed is not null
+            && (!plugin!.RequiresApiKey || !string.IsNullOrEmpty(provider.ProtectedApiKey)))
+        {
+            var apiKey = string.IsNullOrEmpty(provider.ProtectedApiKey)
+                ? string.Empty
+                : host.UnprotectProviderSecret(provider.ProtectedApiKey);
+
+            var result = await host.GetCostsAsync(
+                costFeed,
+                apiKey,
+                periodStart,
+                periodEnd,
+                ct);
+            if (result is not null)
+            {
+                return CreateFeedResponse(
+                    costProvider,
+                    isLocal,
+                    periodStart,
+                    periodEnd,
+                    result);
+            }
+
+            return CreatePermissionDeniedResponse(
+                costProvider,
+                isLocal,
+                periodStart,
+                periodEnd,
+                costFeed.PermissionDeniedNote);
+        }
+
+        return CreateUnsupportedResponse(
+            costProvider,
+            isLocal,
+            periodStart,
+            periodEnd);
+    }
 }
 
 /// <summary>
@@ -129,3 +247,43 @@ public readonly record struct ProviderCostProvider(
     Guid Id,
     string Name,
     string ProviderKey);
+
+/// <summary>
+/// Store-neutral provider configuration needed by the cost workflow.
+/// </summary>
+public readonly record struct ProviderCostProviderConfiguration(
+    Guid Id,
+    string Name,
+    string ProviderKey,
+    string? ProtectedApiKey);
+
+/// <summary>
+/// Host boundary for provider cost reporting. Hosts own persistence,
+/// secret protection, plugin lookup, and HTTP execution.
+/// </summary>
+public interface IProviderCostHost
+{
+    /// <summary>Loads one configured provider for cost reporting.</summary>
+    Task<ProviderCostProviderConfiguration?> LoadProviderAsync(
+        Guid providerId,
+        CancellationToken ct);
+
+    /// <summary>Lists configured providers eligible for cost reporting.</summary>
+    Task<IReadOnlyList<ProviderCostProviderConfiguration>> ListProvidersForCostAsync(
+        bool includeAll,
+        CancellationToken ct);
+
+    /// <summary>Returns the provider plugin for a provider key, if registered.</summary>
+    IProviderPlugin? GetProviderPlugin(string providerKey);
+
+    /// <summary>Unprotects a stored provider API key.</summary>
+    string UnprotectProviderSecret(string protectedSecret);
+
+    /// <summary>Executes a provider cost feed through host-owned HTTP.</summary>
+    Task<ProviderCostResult?> GetCostsAsync(
+        IProviderCostFeed costFeed,
+        string apiKey,
+        DateTimeOffset periodStart,
+        DateTimeOffset periodEnd,
+        CancellationToken ct);
+}
