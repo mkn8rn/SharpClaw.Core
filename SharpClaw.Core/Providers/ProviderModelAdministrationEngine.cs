@@ -27,6 +27,36 @@ public sealed class ProviderModelAdministrationEngine(
         return providers.ListAvailableTypes(host.ProviderPlugins);
     }
 
+    /// <summary>
+    /// Lists configured providers using the host store and Core projection
+    /// semantics.
+    /// </summary>
+    public async Task<IReadOnlyList<ProviderResponse>> ListProvidersAsync(
+        IProviderModelAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var providerRows = await host.ListProvidersAsync(ct);
+        return providerRows
+            .Select(ToProviderResponse)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Loads one configured provider and projects it to the public response.
+    /// </summary>
+    public async Task<ProviderResponse?> GetProviderAsync(
+        Guid providerId,
+        IProviderModelAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var provider = await host.LoadProviderAsync(providerId, ct);
+        return provider is null ? null : ToProviderResponse(provider);
+    }
+
     public async Task<ProviderResponse> CreateProviderAsync(
         CreateProviderRequest request,
         IProviderModelAdministrationHost host,
@@ -279,6 +309,36 @@ public sealed class ProviderModelAdministrationEngine(
         return models.ToResponse(model, provider);
     }
 
+    /// <summary>
+    /// Lists configured models, optionally restricted to one provider.
+    /// </summary>
+    public async Task<IReadOnlyList<ModelResponse>> ListModelsAsync(
+        Guid? providerId,
+        IProviderModelAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var modelRows = await host.ListModelsAsync(providerId, ct);
+        return modelRows
+            .Select(model => models.ToResponse(model))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Loads one configured model and projects it to the public response.
+    /// </summary>
+    public async Task<ModelResponse?> GetModelAsync(
+        Guid modelId,
+        IProviderModelAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var model = await host.LoadModelAsync(modelId, ct);
+        return model is null ? null : models.ToResponse(model);
+    }
+
     public async Task<ModelResponse?> UpdateModelAsync(
         Guid modelId,
         UpdateModelRequest request,
@@ -360,6 +420,14 @@ public interface IProviderModelAdministrationHost
         CancellationToken ct);
 
     Task<ModelDB?> LoadModelAsync(Guid modelId, CancellationToken ct);
+
+    /// <summary>Loads all configured providers for catalog projection.</summary>
+    Task<IReadOnlyList<ProviderDB>> ListProvidersAsync(CancellationToken ct);
+
+    /// <summary>Loads configured models for catalog projection.</summary>
+    Task<IReadOnlyList<ModelDB>> ListModelsAsync(
+        Guid? providerId,
+        CancellationToken ct);
 
     Task<IReadOnlyList<ModelDB>> ListModelsForProviderAsync(
         Guid providerId,

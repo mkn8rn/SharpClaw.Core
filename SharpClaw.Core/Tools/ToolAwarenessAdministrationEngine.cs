@@ -17,6 +17,35 @@ public sealed class ToolAwarenessAdministrationEngine(
     {
     }
 
+    /// <summary>
+    /// Loads one tool-awareness set and projects it to the public response.
+    /// </summary>
+    public async Task<ToolAwarenessSetResponse?> GetByIdAsync(
+        Guid id,
+        IToolAwarenessAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var entity = await host.LoadToolAwarenessSetAsync(id, ct);
+        return entity is null ? null : toolAwareness.ToResponse(entity);
+    }
+
+    /// <summary>
+    /// Lists tool-awareness sets using Core projection semantics.
+    /// </summary>
+    public async Task<IReadOnlyList<ToolAwarenessSetResponse>> ListAsync(
+        IToolAwarenessAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var entities = await host.ListToolAwarenessSetsAsync(ct);
+        return entities
+            .Select(toolAwareness.ToResponse)
+            .ToList();
+    }
+
     public async Task<ToolAwarenessSetResponse> CreateAsync(
         CreateToolAwarenessSetRequest request,
         IToolAwarenessAdministrationHost host,
@@ -73,6 +102,10 @@ public interface IToolAwarenessAdministrationHost
 {
     Task<ToolAwarenessSetDB?> LoadToolAwarenessSetAsync(
         Guid id,
+        CancellationToken ct);
+
+    /// <summary>Loads all tool-awareness sets for public projection.</summary>
+    Task<IReadOnlyList<ToolAwarenessSetDB>> ListToolAwarenessSetsAsync(
         CancellationToken ct);
 
     void TrackToolAwarenessSet(ToolAwarenessSetDB entity);

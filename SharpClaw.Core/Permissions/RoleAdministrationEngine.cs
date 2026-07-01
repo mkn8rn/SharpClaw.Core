@@ -17,6 +17,37 @@ public sealed class RoleAdministrationEngine(
     {
     }
 
+    /// <summary>
+    /// Lists roles using the host store and Core role projection semantics.
+    /// </summary>
+    public async Task<IReadOnlyList<RoleResponse>> ListAsync(
+        IRoleAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var roles = await host.ListRolesAsync(ct);
+        return roles
+            .Select(rolePermissions.ToResponse)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Loads one role and projects it to the public response.
+    /// </summary>
+    public async Task<RoleResponse?> GetAsync(
+        Guid roleId,
+        IRoleAdministrationHost host,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        var role = await host.LoadRoleAsync(roleId, ct);
+        return role is null
+            ? null
+            : rolePermissions.ToResponse(role);
+    }
+
     public async Task<RoleResponse> CreateAsync(
         string name,
         IRoleAdministrationHost host,
@@ -147,6 +178,9 @@ public interface IRoleAdministrationHost
     bool UniqueRoleNamesEnforced { get; }
 
     Task<RoleDB?> LoadRoleAsync(Guid roleId, CancellationToken ct);
+
+    /// <summary>Loads all roles for public catalog projection.</summary>
+    Task<IReadOnlyList<RoleDB>> ListRolesAsync(CancellationToken ct);
 
     Task<RoleDB?> LoadRoleWithPermissionReferenceAsync(
         Guid roleId,
