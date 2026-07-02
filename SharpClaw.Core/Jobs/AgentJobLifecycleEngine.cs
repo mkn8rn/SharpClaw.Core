@@ -264,6 +264,102 @@ public sealed class AgentJobLifecycleEngine
             Logs = [Error($"Job failed: {message}")]
         };
 
+    /// <summary>
+    /// Resolves a module callback that reports a job failure. Terminal jobs
+    /// are left untouched to preserve callback idempotence.
+    /// </summary>
+    public AgentJobLifecycleDecision FailModuleCallback(
+        AgentJobStatus status,
+        string message,
+        string errorLog,
+        DateTimeOffset now)
+    {
+        if (IsTerminal(status))
+            return new AgentJobLifecycleDecision();
+
+        return FailExecution(message, errorLog, now);
+    }
+
+    /// <summary>
+    /// Resolves a module callback that reports completion. A null result value
+    /// preserves the existing stored result data.
+    /// </summary>
+    public AgentJobLifecycleDecision CompleteModuleCallback(
+        AgentJobStatus status,
+        string? resultData,
+        string? message,
+        DateTimeOffset now)
+    {
+        if (IsTerminal(status))
+            return new AgentJobLifecycleDecision();
+
+        return new AgentJobLifecycleDecision
+        {
+            Status = AgentJobStatus.Completed,
+            UpdateCompletedAt = true,
+            CompletedAt = now,
+            UpdateResultData = resultData is not null,
+            ResultData = resultData,
+            Logs =
+            [
+                Info(
+                    string.IsNullOrWhiteSpace(message)
+                        ? "Job completed by module."
+                        : message)
+            ]
+        };
+    }
+
+    /// <summary>
+    /// Resolves a module callback that reports cancellation. Terminal jobs
+    /// are left untouched to preserve callback idempotence.
+    /// </summary>
+    public AgentJobLifecycleDecision CancelModuleCallback(
+        AgentJobStatus status,
+        string? message,
+        DateTimeOffset now)
+    {
+        if (IsTerminal(status))
+            return new AgentJobLifecycleDecision();
+
+        return new AgentJobLifecycleDecision
+        {
+            Status = AgentJobStatus.Cancelled,
+            UpdateCompletedAt = true,
+            CompletedAt = now,
+            Logs =
+            [
+                Warning(
+                    string.IsNullOrWhiteSpace(message)
+                        ? "Job cancelled by module."
+                        : message)
+            ]
+        };
+    }
+
+    /// <summary>
+    /// Resolves stale-session cleanup for queued or executing module jobs.
+    /// Other states are left untouched.
+    /// </summary>
+    public AgentJobLifecycleDecision CancelStaleFromPreviousSession(
+        AgentJobStatus status,
+        DateTimeOffset now)
+    {
+        if (status is not AgentJobStatus.Queued and not AgentJobStatus.Executing)
+            return new AgentJobLifecycleDecision();
+
+        return new AgentJobLifecycleDecision
+        {
+            Status = AgentJobStatus.Cancelled,
+            UpdateCompletedAt = true,
+            CompletedAt = now,
+            Logs =
+            [
+                Warning("Cancelled: stale from previous session.")
+            ]
+        };
+    }
+
     /// <summary>Formats a job action caller consistently for lifecycle logs.</summary>
     public static string FormatCaller(ActionCaller caller) =>
         caller.UserId is not null ? $"user {caller.UserId}"

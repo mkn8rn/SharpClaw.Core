@@ -40,6 +40,15 @@ public sealed record AgentJobLifecycleDecision
 
     /// <summary>Lifecycle log entries the host should persist in order.</summary>
     public IReadOnlyList<AgentJobLifecycleLog> Logs { get; init; } = [];
+
+    /// <summary>Returns whether applying this decision changes persisted state or logs.</summary>
+    public bool HasChanges =>
+        Status is not null
+        || UpdateStartedAt
+        || UpdateCompletedAt
+        || UpdateResultData
+        || UpdateErrorLog
+        || Logs.Count > 0;
 }
 
 /// <summary>A job lifecycle log entry independent of the host database type.</summary>

@@ -167,6 +167,18 @@ public sealed class AgentJobAdministrationEngine
             && (resourceId == null || job.ResourceId == resourceId);
     }
 
+    /// <summary>
+    /// Validates the module stale-job action prefix with the historical host
+    /// callback exception text.
+    /// </summary>
+    public void EnsureModuleCallbackActionPrefix(string actionKeyPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(actionKeyPrefix))
+            throw new ArgumentException(
+                "Action key prefix is required.",
+                nameof(actionKeyPrefix));
+    }
+
     /// <summary>Returns whether a job action key matches a prefix.</summary>
     public bool JobMatchesActionPrefix(
         AgentJobDB? job,
