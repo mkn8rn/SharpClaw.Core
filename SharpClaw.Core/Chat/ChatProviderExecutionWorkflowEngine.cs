@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using SharpClaw.Contracts.DTOs.AgentActions;
 using SharpClaw.Contracts.DTOs.Tasks;
@@ -89,6 +90,60 @@ public sealed class ChatProviderExecutionWorkflowEngine(
             plain.Usage?.CompletionTokens ?? 0,
             plain.ProviderMetadataJson);
     }
+
+    /// <summary>
+    /// Streams a provider chat turn. This resolves the effective tool surface
+    /// when tools are enabled, then delegates the streaming state machine to
+    /// the native SharpClaw tool loop.
+    /// </summary>
+    public async IAsyncEnumerable<ChatNativeToolStreamingLoopEvent> StreamAsync(
+        ChatStreamingProviderExecutionRequest request,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.NativeToolHost);
+
+        var cancellationToken = ct.CanBeCanceled
+            ? ct
+            : request.CancellationToken;
+        var effectiveTools = request.EnableTools
+            ? await _tools.GetEffectiveToolsAsync(
+                new ChatEffectiveToolRequest(
+                    request.TaskContext,
+                    request.ToolAwareness,
+                    request.AgentId),
+                cancellationToken)
+            : [];
+
+        await foreach (var loopEvent in _nativeToolLoop.StreamAsync(
+            new ChatNativeToolLoopRequest(
+                request.Client,
+                request.HttpClient,
+                request.ApiKey,
+                request.ModelName,
+                request.SystemPrompt,
+                request.History,
+                request.AgentId,
+                request.ChannelId,
+                request.ModelCapabilityTags,
+                request.MaxCompletionTokens,
+                request.ProviderParameters,
+                request.CompletionParameters,
+                effectiveTools,
+                request.NativeToolHost,
+                cancellationToken,
+                request.ApprovalCallback,
+                request.TaskContext,
+                request.ToolAwareness,
+                request.ThreadId,
+                request.TimingRequestId,
+                request.GetElapsedMilliseconds,
+                request.MaxToolCallRounds),
+            cancellationToken))
+        {
+            yield return loopEvent;
+        }
+    }
 }
 
 public sealed record ChatBufferedProviderExecutionRequest(
@@ -121,3 +176,27 @@ public sealed record ChatBufferedProviderExecutionResult(
     int TotalPromptTokens = 0,
     int TotalCompletionTokens = 0,
     string? ProviderMetadataJson = null);
+
+public sealed record ChatStreamingProviderExecutionRequest(
+    IProviderApiClient Client,
+    HttpClient HttpClient,
+    string ApiKey,
+    string ModelName,
+    string? SystemPrompt,
+    IReadOnlyList<ChatCompletionMessage> History,
+    Guid AgentId,
+    Guid ChannelId,
+    IReadOnlySet<string> ModelCapabilityTags,
+    int? MaxCompletionTokens,
+    Dictionary<string, JsonElement>? ProviderParameters,
+    CompletionParameters? CompletionParameters,
+    bool EnableTools,
+    IChatNativeToolLoopHost NativeToolHost,
+    CancellationToken CancellationToken,
+    Func<AgentJobResponse, CancellationToken, Task<bool>>? ApprovalCallback = null,
+    TaskChatContext? TaskContext = null,
+    Dictionary<string, bool>? ToolAwareness = null,
+    Guid? ThreadId = null,
+    string? TimingRequestId = null,
+    Func<long?>? GetElapsedMilliseconds = null,
+    int MaxToolCallRounds = 50);
